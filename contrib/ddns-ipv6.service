@@ -1,0 +1,21 @@
+[Unit]
+Description=ddns-ipv6 dynamic DNS updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ddns-ipv6 --config /etc/ddns-ipv6/config.toml
+Restart=always
+RestartSec=30
+# For netlink: no special capabilities needed
+# For RA listener: uncomment the line below
+# AmbientCapabilities=CAP_NET_RAW
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ddns-ipv6
+User=ddns-ipv6
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target

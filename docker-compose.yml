@@ -1,0 +1,23 @@
+services:
+  ddns-ipv6:
+    image: ghcr.io/nykma/ddns-ipv6:latest
+    container_name: ddns-ipv6
+    restart: unless-stopped
+    networks:
+      ipv6-host:
+        ipv4_address: 10.0.3.1
+    dns:
+      - 10.0.0.1
+    volumes:
+      - ./config.toml:/etc/ddns-ipv6/config.toml:ro
+    environment:
+      - RUST_LOG=info
+      - CF_API_TOKEN=${CF_API_TOKEN:-}
+      - TSIG_SECRET=${TSIG_SECRET:-}
+    # RA 方式额外需要：
+    # cap_add:
+    #   - NET_RAW
+
+networks:
+  ipv6-host:
+    external: true

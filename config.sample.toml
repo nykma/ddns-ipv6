@@ -1,0 +1,77 @@
+# ddns-ipv6 sample configuration
+# Copy to config.toml and adjust to your environment.
+#
+# All values shown below are examples — replace with your actual data.
+
+# ── Prefix detection ──────────────────────────────────────────────────────
+# Choose ONE of the three methods below.
+
+[prefix]
+
+# Method 1: DNS polling — resolve a reference domain's AAAA record,
+# extract the /64 prefix from the result. Polls every interval_secs.
+# Best for: any environment, no special permissions needed.
+method = "dns"
+reference_domain = "my-router.example.com"
+
+# Method 2: netlink — watch local interface IPv6 address changes via netlink.
+# Reacts instantly, no polling. Linux only.
+# method = "netlink"
+# interface = "eth0"
+
+# Method 3: RA — capture raw ICMPv6 Router Advertisement packets.
+# Reacts instantly. Linux only, requires CAP_NET_RAW.
+# method = "ra"
+# interface = "eth0"
+
+
+# ── DNS provider ──────────────────────────────────────────────────────────
+# Choose ONE of the two providers below.
+
+[dns]
+
+# Provider A: Cloudflare API
+# Requires a zone-scoped API token with DNS:Edit permission.
+provider = "cloudflare"
+zone_id = "abc123def456"
+api_token = "env:CF_API_TOKEN"
+
+# Provider B: RFC 2136 dynamic update with TSIG
+# Connect directly to an authoritative nameserver.
+# provider = "rfc2136"
+# server = "tcp://ns1.example.com:53"
+# key_name = "ddns-key."
+# key_algorithm = "hmac-sha256"       # or "hmac-sha512"
+# key_secret = "env:TSIG_SECRET"
+
+
+# ── Hosts ─────────────────────────────────────────────────────────────────
+# Each [[hosts]] entry maps a per-host IPv6 suffix to a domain name.
+# The suffix is the stable lower 64 bits of the host's address.
+# Multiple entries are combined with the detected /64 prefix at runtime.
+
+# Compact suffix — the simplest form.
+[[hosts]]
+suffix = "::1"
+domain = "server-a.example.com"
+
+# Verbose suffix — makes the host identifier readable.
+[[hosts]]
+suffix = "::dead:beef"
+domain = "server-b.example.com"
+
+# RFC 7217-style stable privacy address suffix.
+[[hosts]]
+suffix = "::cafe:babe:cafe:babe"
+domain = "server-c.example.com"
+
+# Full-format suffix (upper 64 bits are silently masked to zero).
+[[hosts]]
+suffix = "::0216:3eff:fe12:3456"
+domain = "printer.example.com"
+
+
+# ── Polling interval ──────────────────────────────────────────────────────
+# How often (in seconds) to poll the reference domain for prefix changes.
+# Only used when method = "dns". Default: 300.
+interval_secs = 300
