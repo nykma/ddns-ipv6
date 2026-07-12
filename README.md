@@ -12,6 +12,7 @@ When your ISP rotates the IPv6 prefix, every SLAAC-configured host on your LAN g
 - **Two DNS update backends**: Cloudflare API (Bearer Token, per-zone), RFC 2136 dynamic update (TSIG-signed)
 - **Signal control**: `SIGUSR1` triggers an immediate detection + update cycle; `SIGTERM`/`SIGINT` shuts down gracefully
 - **Idempotent**: in-memory cache of current DNS state — skips API calls when the address hasn't changed
+- **Docker container auto-discovery**: label containers with `ddns.domain=<fqdn>` and the daemon finds them automatically through the Docker API — no manual suffix tracking needed
 
 ## When to use
 
@@ -189,16 +190,19 @@ interface = "eth0"
 ```
 
 For the RA method, uncomment `cap_add: [NET_RAW]` in docker-compose.yml.
+### Docker Container Discovery
 
-### Notes
+Instead of listing every container's IPv6 suffix manually in `[[hosts]]`, you can let the daemon discover them through the Docker API. Each target container declares its domain name via a label, and `ddns-ipv6` reads the container's IPv6 address, extracts the suffix, and keeps the AAAA record updated alongside your static hosts.
 
-- **macvlan host isolation**: In bridge mode, the host cannot directly reach macvlan containers. To access them from the host, create an additional macvlan sub-interface on the host and add a route.
-- **IPv6 forwarding**: If the macvlan subnet differs from the host's subnet, enable IPv6 forwarding: `sysctl -w net.ipv6.conf.all.forwarding=1`.
-- **RA method**: Requires `CAP_NET_RAW` (Docker: `cap_add: [NET_RAW]`, systemd: `AmbientCapabilities=CAP_NET_RAW`). In containerized deployments, also ensure multicast RA packets reach the macvlan interface.
+**How it works:**
 
-#### Container auto-discovery
+1. You add a `ddns.domain=<fqdn>` label to each container that needs DDNS
+2. The daemon connects to the Docker socket and lists all containers with this label
+3. For each labeled container, it inspects the network settings and extracts the lower 64 bits (suffix) from the container's global unicast IPv6 address
+4. The discovered suffix+domain pairs are merged with your static `[[hosts]]` entries
+5. The combined list feeds into the existing `prefix + suffix → DNS update` pipeline
 
-Instead of listing every container's suffix in `[[hosts]]`, let the daemon discover them automatically through the Docker API. Add a `ddns.domain` label to each target container:
+**Container example:**
 
 ```yaml
 services:
@@ -222,24 +226,31 @@ services:
       - CF_API_TOKEN=${CF_API_TOKEN}
 ```
 
-Then enable discovery in `config.toml`:
+Enable discovery in `config.toml`:
 
 ```toml
 [docker]
 enabled = true
 ```
 
-- The daemon inspects each labeled container's network settings for a global unicast IPv6 address and extracts the lower 64 bits as the suffix.
-- Discovered hosts merge with static `[[hosts]]` entries — you can use both.
-- When a container stops, its domain silently drops from the next update cycle. No DNS records are deleted.
+- The `ddns.domain` label is the only label needed — its presence both opts the container in and specifies the domain.
+- Discovered hosts merge with static `[[hosts]]` entries. Domain collisions produce a warning; the Docker-discovered entry wins.
+- When a container stops or is removed, its domain silently drops from the next update cycle. DNS records are not deleted.
+- Works with any prefix detection method (`dns`, `netlink`, or `ra`).
 
-**Permissions:** Mounting `docker.sock` grants effective root access to the host. For least-privilege setups, use [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and set `socket_path` to the proxy endpoint:
+**Permissions:** Mounting `/var/run/docker.sock` grants effective root access to the host. For least-privilege setups, use [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and point `socket_path` at the proxy:
 
 ```toml
 [docker]
 enabled = true
 socket_path = "tcp://docker-proxy:2375"
 ```
+
+### Notes
+
+- **macvlan host isolation**: In bridge mode, the host cannot directly reach macvlan containers. To access them from the host, create an additional macvlan sub-interface on the host and add a route.
+- **IPv6 forwarding**: If the macvlan subnet differs from the host's subnet, enable IPv6 forwarding: `sysctl -w net.ipv6.conf.all.forwarding=1`.
+- **RA method**: Requires `CAP_NET_RAW` (Docker: `cap_add: [NET_RAW]`, systemd: `AmbientCapabilities=CAP_NET_RAW`). In containerized deployments, also ensure multicast RA packets reach the macvlan interface.
 
 
 ## Build

@@ -10,6 +10,7 @@
 - **两种 DNS 更新后端**：Cloudflare API（Bearer Token 认证，按 Zone 操作）、RFC 2136 动态更新（TSIG 签名认证）
 - **信号控制**：`SIGUSR1` 立即触发检测+更新，`SIGTERM`/`SIGINT` 优雅退出
 - **幂等**：内存缓存当前 DNS 状态，地址未变时跳过 API 调用
+- **Docker 容器自动发现**：给容器打上 `ddns.domain=<域名>` 标签，ddns-ipv6 通过 Docker API 自动发现并管理 — 无需手动记录每台容器的 suffix
 
 ## 适用范围
 
@@ -194,11 +195,19 @@ RA 方式需要在 docker-compose.yml 中取消 `cap_add: [NET_RAW]` 注释。
 
 - **macvlan 与宿主机隔离**：macvlan bridge 模式下，宿主机默认无法直接访问 macvlan 容器。如需从宿主机访问，需在宿主机上创建额外的 macvlan 子接口并配置路由。
 - **IPv6 内核转发**：如果 macvlan 子网与宿主机不在同一网段，需在宿主机上启用 IPv6 转发：`sysctl -w net.ipv6.conf.all.forwarding=1`。
-- **RA 方式**：需要 `CAP_NET_RAW`（Docker: `cap_add: [NET_RAW]`，systemd: `AmbientCapabilities=CAP_NET_RAW`）。容器化部署时还需确保 macvlan 接口能收到多播 RA 报文。
+### Docker 容器自动发现
 
-#### 容器自动发现
+无需在 `[[hosts]]` 中逐个记录容器的 IPv6 suffix，让 ddns-ipv6 通过 Docker API 自动发现。每个目标容器只需通过 label 声明自己的域名，ddns-ipv6 会读取容器的 IPv6 地址、提取 suffix，并与静态主机一起保持 AAAA 记录更新。
 
-无需在 `[[hosts]]` 中逐个列出容器的 suffix，可以让 ddns-ipv6 通过 Docker API 自动发现。给每个目标容器添加 `ddns.domain` label：
+**工作流程：**
+
+1. 给需要 DDNS 的容器打上 `ddns.domain=<域名>` label
+2. ddns-ipv6 连接到 Docker socket，列出所有带此 label 的容器
+3. 对每个有 label 的容器，检查其网络设置，从全局单播 IPv6 地址中提取低 64 位（suffix）
+4. 发现的 suffix+域名 对与静态 `[[hosts]]` 条目合并
+5. 合并后的列表进入现有的 `prefix + suffix → DNS 更新` 流水线
+
+**容器配置示例：**
 
 ```yaml
 services:
@@ -222,18 +231,19 @@ services:
       - CF_API_TOKEN=${CF_API_TOKEN}
 ```
 
-然后在 `config.toml` 中启用：
+在 `config.toml` 中启用：
 
 ```toml
 [docker]
 enabled = true
 ```
 
-- ddns-ipv6 会检查每个有 label 的容器的网络设置，提取全局单播 IPv6 地址的低 64 位作为 suffix
-- 发现的主机与静态 `[[hosts]]` 条目合并 — 可以同时使用
-- 容器停止后，其域名在下一轮检测周期自动移除，不会删除 DNS 记录
+- 只需要 `ddns.domain` 这一个 label — 它的存在既是 opt-in 信号，也指定了域名
+- 发现的主机与静态 `[[hosts]]` 条目合并。域名冲突时记录警告，Docker 发现的条目优先
+- 容器停止或被移除后，其域名在下一轮检测周期自动移除，不会删除 DNS 记录
+- 适用于所有前缀检测方式（`dns`、`netlink`、`ra`）
 
-**权限说明：** 挂载 `docker.sock` 等同于授予宿主机 root 权限。对于最小权限部署，建议使用 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)，并将 `socket_path` 指向代理地址：
+**权限说明：** 挂载 `/var/run/docker.sock` 等同于授予宿主机 root 权限。对于最小权限部署，建议使用 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)，并将 `socket_path` 指向代理地址：
 
 ```toml
 [docker]
@@ -241,7 +251,11 @@ enabled = true
 socket_path = "tcp://docker-proxy:2375"
 ```
 
+### 注意事项
 
+- **macvlan 与宿主机隔离**：macvlan bridge 模式下，宿主机默认无法直接访问 macvlan 容器。如需从宿主机访问，需在宿主机上创建额外的 macvlan 子接口并配置路由。
+- **IPv6 内核转发**：如果 macvlan 子网与宿主机不在同一网段，需在宿主机上启用 IPv6 转发：`sysctl -w net.ipv6.conf.all.forwarding=1`。
+- **RA 方式**：需要 `CAP_NET_RAW`（Docker: `cap_add: [NET_RAW]`，systemd: `AmbientCapabilities=CAP_NET_RAW`）。容器化部署时还需确保 macvlan 接口能收到多播 RA 报文。
 ## 编译
 
 ```bash
