@@ -17,6 +17,12 @@ pub fn suffix_from_addr(addr: &Ipv6Addr) -> Ipv6Addr {
     lower
 }
 
+/// Return true if the address is a global unicast IPv6 address (2000::/3).
+pub fn is_global_unicast(addr: &Ipv6Addr) -> bool {
+    let segments = addr.segments();
+    (0x2000..=0x3FFF).contains(&segments[0])
+}
+
 /// Combine a /64 prefix (upper 64 bits of an Ipv6Addr) with a suffix (lower 64 bits).
 ///
 /// # Panics

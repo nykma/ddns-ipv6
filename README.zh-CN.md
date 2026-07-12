@@ -196,6 +196,52 @@ RA 方式需要在 docker-compose.yml 中取消 `cap_add: [NET_RAW]` 注释。
 - **IPv6 内核转发**：如果 macvlan 子网与宿主机不在同一网段，需在宿主机上启用 IPv6 转发：`sysctl -w net.ipv6.conf.all.forwarding=1`。
 - **RA 方式**：需要 `CAP_NET_RAW`（Docker: `cap_add: [NET_RAW]`，systemd: `AmbientCapabilities=CAP_NET_RAW`）。容器化部署时还需确保 macvlan 接口能收到多播 RA 报文。
 
+#### 容器自动发现
+
+无需在 `[[hosts]]` 中逐个列出容器的 suffix，可以让 ddns-ipv6 通过 Docker API 自动发现。给每个目标容器添加 `ddns.domain` label：
+
+```yaml
+services:
+  my-app:
+    image: my-app:latest
+    networks:
+      ipv6-host:
+    labels:
+      ddns.domain: "my-app.example.com"
+
+  ddns-ipv6:
+    image: ghcr.io/nykma/ddns-ipv6:latest
+    restart: unless-stopped
+    networks:
+      ipv6-host:
+    volumes:
+      - ./config.toml:/etc/ddns-ipv6/config.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - RUST_LOG=info
+      - CF_API_TOKEN=${CF_API_TOKEN}
+```
+
+然后在 `config.toml` 中启用：
+
+```toml
+[docker]
+enabled = true
+```
+
+- ddns-ipv6 会检查每个有 label 的容器的网络设置，提取全局单播 IPv6 地址的低 64 位作为 suffix
+- 发现的主机与静态 `[[hosts]]` 条目合并 — 可以同时使用
+- 容器停止后，其域名在下一轮检测周期自动移除，不会删除 DNS 记录
+
+**权限说明：** 挂载 `docker.sock` 等同于授予宿主机 root 权限。对于最小权限部署，建议使用 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)，并将 `socket_path` 指向代理地址：
+
+```toml
+[docker]
+enabled = true
+socket_path = "tcp://docker-proxy:2375"
+```
+
+
 ## 编译
 
 ```bash

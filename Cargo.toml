@@ -26,3 +26,4 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
 libc = "0.2"
 async-trait = "0.1"
+bollard = { version = "0.21", default-features = false, features = ["pipe"] }

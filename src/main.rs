@@ -15,6 +15,7 @@ use ddns_ipv6::prefix::dns::DnsResolver;
 use ddns_ipv6::updater::cloudflare::CloudflareUpdater;
 use ddns_ipv6::util;
 use ddns_ipv6::{DnsUpdater, Error, PrefixDetector};
+use ddns_ipv6::docker::DockerDiscoverer;
 
 #[derive(Parser)]
 #[command(name = "ddns-ipv6", about = "Dynamic DNS updater for IPv6 prefixes")]
@@ -52,20 +53,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build DNS updater
     let updater: Arc<dyn DnsUpdater> = build_updater(&config)?;
-
-    // Parse suffixes
-    let suffixes: Vec<(Ipv6Addr, String)> = config
+    // Parse static suffixes
+    let static_suffixes: Vec<(Ipv6Addr, String)> = config
         .hosts
         .iter()
         .map(|h| (h.suffix, h.domain.clone()))
         .collect();
 
+    // Build Docker container discoverer (optional)
+    let docker_discoverer: Option<DockerDiscoverer> = match &config.docker {
+        Some(dc) => {
+            info!("docker discovery enabled");
+            Some(DockerDiscoverer::new(dc)?)
+        }
+        None => None,
+    };
+
     // Cache: domain -> current Ipv6Addr
     let mut cache: HashMap<String, Ipv6Addr> = HashMap::new();
-
     // Startup: query current DNS state to seed the cache, then run one update cycle
     info!("running startup check...");
-    for (_suffix, domain) in &suffixes {
+    let discovered = if let Some(dd) = &docker_discoverer {
+        dd.discover().await
+    } else {
+        Vec::new()
+    };
+    let all_suffixes: Vec<(Ipv6Addr, String)> = static_suffixes
+        .iter()
+        .cloned()
+        .chain(discovered.iter().map(|h| (h.suffix, h.domain.clone())))
+        .collect();
+    for (_suffix, domain) in &all_suffixes {
         match updater.get_record(domain).await {
             Ok(Some(addr)) => {
                 info!(domain, %addr, "current DNS record");
@@ -81,7 +99,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Run one full update cycle at startup
-    run_update_cycle(&*detector, &*updater, &suffixes, &mut cache).await;
+    run_update_cycle(
+        &*detector,
+        &*updater,
+        &static_suffixes,
+        docker_discoverer.as_ref(),
+        &mut cache,
+    )
+    .await;
 
     // Setup signals
     let cancel_token = CancellationToken::new();
@@ -129,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        run_update_cycle(&*detector, &*updater, &suffixes, &mut cache).await;
+        run_update_cycle(&*detector, &*updater, &static_suffixes, docker_discoverer.as_ref(), &mut cache).await;
     }
 
     info!("shutdown complete");
@@ -139,7 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_update_cycle(
     detector: &dyn PrefixDetector,
     updater: &dyn DnsUpdater,
-    suffixes: &[(Ipv6Addr, String)],
+    static_suffixes: &[(Ipv6Addr, String)],
+    docker_discoverer: Option<&DockerDiscoverer>,
     cache: &mut HashMap<String, Ipv6Addr>,
 ) {
     let prefix = match detector.detect().await {
@@ -152,8 +178,28 @@ async fn run_update_cycle(
 
     info!(prefix = %prefix, "detected prefix");
 
-    let mut errors = Vec::new();
-    for (suffix, domain) in suffixes {
+    // Merge Docker-discovered hosts with static suffixes
+    let discovered = if let Some(dd) = docker_discoverer {
+        dd.discover().await
+    } else {
+        Vec::new()
+    };
+    let combined: Vec<(Ipv6Addr, String)> = static_suffixes
+        .iter()
+        .cloned()
+        .chain(discovered.iter().map(|h| (h.suffix, h.domain.clone())))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut suffixes: Vec<(Ipv6Addr, String)> = Vec::new();
+    for (suffix, domain) in combined {
+        if !seen.insert(domain.clone()) {
+            warn!(%domain, "duplicate domain in host list; last entry wins");
+        }
+        suffixes.push((suffix, domain));
+    }
+
+    let mut error_count = 0usize;
+    for (suffix, domain) in &suffixes {
         let new_addr = util::combine(&prefix, suffix);
         if cache.get(domain) == Some(&new_addr) {
             continue;
@@ -166,13 +212,13 @@ async fn run_update_cycle(
             }
             Err(e) => {
                 error!(domain, error = %e, "update failed");
-                errors.push(e);
+                error_count += 1;
             }
         }
     }
 
-    if !errors.is_empty() {
-        warn!(count = errors.len(), "some updates failed");
+    if error_count > 0 {
+        warn!(count = error_count, "some updates failed");
     }
 }
 

@@ -196,6 +196,52 @@ For the RA method, uncomment `cap_add: [NET_RAW]` in docker-compose.yml.
 - **IPv6 forwarding**: If the macvlan subnet differs from the host's subnet, enable IPv6 forwarding: `sysctl -w net.ipv6.conf.all.forwarding=1`.
 - **RA method**: Requires `CAP_NET_RAW` (Docker: `cap_add: [NET_RAW]`, systemd: `AmbientCapabilities=CAP_NET_RAW`). In containerized deployments, also ensure multicast RA packets reach the macvlan interface.
 
+#### Container auto-discovery
+
+Instead of listing every container's suffix in `[[hosts]]`, let the daemon discover them automatically through the Docker API. Add a `ddns.domain` label to each target container:
+
+```yaml
+services:
+  my-app:
+    image: my-app:latest
+    networks:
+      ipv6-host:
+    labels:
+      ddns.domain: "my-app.example.com"
+
+  ddns-ipv6:
+    image: ghcr.io/nykma/ddns-ipv6:latest
+    restart: unless-stopped
+    networks:
+      ipv6-host:
+    volumes:
+      - ./config.toml:/etc/ddns-ipv6/config.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - RUST_LOG=info
+      - CF_API_TOKEN=${CF_API_TOKEN}
+```
+
+Then enable discovery in `config.toml`:
+
+```toml
+[docker]
+enabled = true
+```
+
+- The daemon inspects each labeled container's network settings for a global unicast IPv6 address and extracts the lower 64 bits as the suffix.
+- Discovered hosts merge with static `[[hosts]]` entries — you can use both.
+- When a container stops, its domain silently drops from the next update cycle. No DNS records are deleted.
+
+**Permissions:** Mounting `docker.sock` grants effective root access to the host. For least-privilege setups, use [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and set `socket_path` to the proxy endpoint:
+
+```toml
+[docker]
+enabled = true
+socket_path = "tcp://docker-proxy:2375"
+```
+
+
 ## Build
 
 ```bash

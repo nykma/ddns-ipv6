@@ -14,6 +14,7 @@ pub struct Config {
     pub dns: ProviderConfig,
     pub hosts: Vec<HostEntry>,
     pub interval_secs: u64,
+    pub docker: Option<DockerConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,15 @@ pub struct HostEntry {
     pub domain: String,
 }
 
+fn default_socket_path() -> String {
+    "/var/run/docker.sock".to_string()
+}
+
+#[derive(Debug, Clone)]
+pub struct DockerConfig {
+    pub socket_path: String,
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path)?;
@@ -52,17 +62,23 @@ impl Config {
         let prefix = parse_prefix(&root)?;
         let dns = parse_dns(&root)?;
         let hosts = parse_hosts(&root)?;
+        let docker = parse_docker(&root)?;
         let interval_secs = root
             .get("interval_secs")
             .and_then(|v| v.as_integer())
             .map(|v| v as u64)
             .unwrap_or_else(default_interval);
 
+        if hosts.is_empty() && docker.is_none() {
+            return Err(ConfigError::EmptyHosts);
+        }
+
         Ok(Config {
             prefix,
             dns,
             hosts,
             interval_secs,
+            docker,
         })
     }
 }
@@ -140,11 +156,10 @@ fn parse_dns(root: &toml::Table) -> Result<ProviderConfig, ConfigError> {
 }
 
 fn parse_hosts(root: &toml::Table) -> Result<Vec<HostEntry>, ConfigError> {
-    let hosts_raw = root
-        .get("hosts")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| ConfigError::MissingField("hosts".into()))?;
-
+    let hosts_raw = match root.get("hosts").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return Ok(Vec::new()),
+    };
     let mut hosts = Vec::new();
     for entry in hosts_raw {
         let table = entry.as_table().ok_or_else(|| {
@@ -158,11 +173,32 @@ fn parse_hosts(root: &toml::Table) -> Result<Vec<HostEntry>, ConfigError> {
         hosts.push(HostEntry { suffix, domain });
     }
 
-    if hosts.is_empty() {
-        return Err(ConfigError::EmptyHosts);
-    }
 
     Ok(hosts)
+}
+
+fn parse_docker(root: &toml::Table) -> Result<Option<DockerConfig>, ConfigError> {
+    let docker_table = match root.get("docker").and_then(|v| v.as_table()) {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    let enabled = docker_table
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !enabled {
+        return Ok(None);
+    }
+
+    let socket_path = docker_table
+        .get("socket_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(default_socket_path);
+
+    Ok(Some(DockerConfig { socket_path }))
 }
 
 fn get_string(table: &toml::Table, key: &str) -> Result<String, ConfigError> {
@@ -421,4 +457,155 @@ domain = \"test.example.com\"
             e => panic!("expected EnvNotSet, got {e:?}"),
         }
     }
+
+    // ── Docker config tests ──
+
+    #[test]
+    fn docker_enabled_parses() {
+        let toml = "\
+[prefix]
+method = \"dns\"
+reference_domain = \"router.example.com\"
+
+[dns]
+provider = \"cloudflare\"
+zone_id = \"abc\"
+api_token = \"token\"
+
+[[hosts]]
+suffix = \"::1\"
+domain = \"test.example.com\"
+
+[docker]
+enabled = true
+";
+        let path = write_tmp(toml);
+        let config = Config::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let dc = config.docker.expect("docker config should be present");
+        assert_eq!(dc.socket_path, "/var/run/docker.sock");
+    }
+
+    #[test]
+    fn docker_custom_socket_path() {
+        let toml = "\
+[prefix]
+method = \"dns\"
+reference_domain = \"router.example.com\"
+
+[dns]
+provider = \"cloudflare\"
+zone_id = \"abc\"
+api_token = \"token\"
+
+[[hosts]]
+suffix = \"::1\"
+domain = \"test.example.com\"
+
+[docker]
+enabled = true
+socket_path = \"/custom/path/docker.sock\"
+";
+        let path = write_tmp(toml);
+        let config = Config::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let dc = config.docker.expect("docker config should be present");
+        assert_eq!(dc.socket_path, "/custom/path/docker.sock");
+    }
+
+    #[test]
+    fn docker_disabled_returns_none() {
+        let toml = "\
+[prefix]
+method = \"dns\"
+reference_domain = \"router.example.com\"
+
+[dns]
+provider = \"cloudflare\"
+zone_id = \"abc\"
+api_token = \"token\"
+
+[[hosts]]
+suffix = \"::1\"
+domain = \"test.example.com\"
+
+[docker]
+enabled = false
+";
+        let path = write_tmp(toml);
+        let config = Config::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(config.docker.is_none());
+    }
+
+    #[test]
+    fn docker_missing_returns_none() {
+        let toml = "\
+[prefix]
+method = \"dns\"
+reference_domain = \"router.example.com\"
+
+[dns]
+provider = \"cloudflare\"
+zone_id = \"abc\"
+api_token = \"token\"
+
+[[hosts]]
+suffix = \"::1\"
+domain = \"test.example.com\"
+";
+        let path = write_tmp(toml);
+        let config = Config::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(config.docker.is_none());
+    }
+
+    #[test]
+    fn docker_empty_section_defaults_disabled() {
+        let toml = "\
+[prefix]
+method = \"dns\"
+reference_domain = \"router.example.com\"
+
+[dns]
+provider = \"cloudflare\"
+zone_id = \"abc\"
+api_token = \"token\"
+
+[[hosts]]
+suffix = \"::1\"
+domain = \"test.example.com\"
+
+[docker]
+";
+        let path = write_tmp(toml);
+        let config = Config::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(config.docker.is_none());
+    }
+
+    #[test]
+    fn docker_only_no_static_hosts() {
+        let toml = "\
+[prefix]
+method = \"dns\"
+reference_domain = \"router.example.com\"
+
+[dns]
+provider = \"cloudflare\"
+zone_id = \"abc\"
+api_token = \"token\"
+
+[docker]
+enabled = true
+";
+        let path = write_tmp(toml);
+        let config = Config::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(config.hosts.is_empty());
+        assert!(config.docker.is_some());
+    }
 }
+
