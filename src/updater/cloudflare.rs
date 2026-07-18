@@ -159,8 +159,9 @@ impl super::DnsUpdater for CloudflareUpdater {
             urlencoding(domain)
         );
 
-        let response: CfApiResponse<Vec<CfDnsRecord>> =
-            self.request_with_retry(reqwest::Method::GET, &path, None::<&()>).await?;
+        let response: CfApiResponse<Vec<CfDnsRecord>> = self
+            .request_with_retry(reqwest::Method::GET, &path, None::<&()>)
+            .await?;
 
         if !response.success {
             let errors: Vec<String> = response.errors.iter().map(|e| e.message.clone()).collect();
@@ -193,8 +194,9 @@ impl super::DnsUpdater for CloudflareUpdater {
             self.zone_id, domain_encoded
         );
 
-        let response: CfApiResponse<Vec<CfDnsRecord>> =
-            self.request_with_retry(reqwest::Method::GET, &list_path, None::<&()>).await?;
+        let response: CfApiResponse<Vec<CfDnsRecord>> = self
+            .request_with_retry(reqwest::Method::GET, &list_path, None::<&()>)
+            .await?;
 
         if !response.success {
             let errors: Vec<String> = response.errors.iter().map(|e| e.message.clone()).collect();
@@ -216,10 +218,7 @@ impl super::DnsUpdater for CloudflareUpdater {
                 }
 
                 // Update existing record
-                let update_path = format!(
-                    "/zones/{}/dns_records/{}",
-                    self.zone_id, record.id
-                );
+                let update_path = format!("/zones/{}/dns_records/{}", self.zone_id, record.id);
                 let body = CfUpdateRecord {
                     content: addr_str.clone(),
                 };

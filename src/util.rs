@@ -6,8 +6,26 @@ use tracing::warn;
 pub fn suffix_from_addr(addr: &Ipv6Addr) -> Ipv6Addr {
     let segments = addr.segments();
     // Lower 64 bits = segments 4-7
-    let lower = Ipv6Addr::new(0, 0, 0, 0, segments[4], segments[5], segments[6], segments[7]);
-    let upper = Ipv6Addr::new(segments[0], segments[1], segments[2], segments[3], 0, 0, 0, 0);
+    let lower = Ipv6Addr::new(
+        0,
+        0,
+        0,
+        0,
+        segments[4],
+        segments[5],
+        segments[6],
+        segments[7],
+    );
+    let upper = Ipv6Addr::new(
+        segments[0],
+        segments[1],
+        segments[2],
+        segments[3],
+        0,
+        0,
+        0,
+        0,
+    );
     if !upper.is_unspecified() {
         warn!(
             upper = %upper,
@@ -45,9 +63,7 @@ pub fn combine(prefix: &Ipv6Addr, suffix: &Ipv6Addr) -> Ipv6Addr {
         "suffix upper 64 bits should be zero"
     );
 
-    Ipv6Addr::new(
-        p[0], p[1], p[2], p[3], s[4], s[5], s[6], s[7],
-    )
+    Ipv6Addr::new(p[0], p[1], p[2], p[3], s[4], s[5], s[6], s[7])
 }
 
 #[cfg(test)]

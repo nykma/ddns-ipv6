@@ -56,14 +56,16 @@ fn run_ra_listener(
 
     let mut buf: [MaybeUninit<u8>; 1500] = unsafe { MaybeUninit::uninit().assume_init() };
 
-    info!(interface, "RA listener started, waiting for Router Advertisements");
+    info!(
+        interface,
+        "RA listener started, waiting for Router Advertisements"
+    );
 
     loop {
         match socket.recv(&mut buf) {
             Ok(n) => {
                 // SAFETY: recv filled n bytes; transmute to initialized slice
-                let data =
-                    unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
+                let data = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
                 if let Some(prefix) = parse_ra_packet(data) {
                     debug!(%prefix, "RA prefix detected");
                     if let Ok(mut last) = last_prefix.lock() {
@@ -186,8 +188,14 @@ fn parse_ra_packet(data: &[u8]) -> Option<Ipv6Addr> {
                 segments[i] = u16::from_be_bytes([data[base], data[base + 1]]);
             }
             let prefix = Ipv6Addr::new(
-                segments[0], segments[1], segments[2], segments[3],
-                segments[4], segments[5], segments[6], segments[7],
+                segments[0],
+                segments[1],
+                segments[2],
+                segments[3],
+                segments[4],
+                segments[5],
+                segments[6],
+                segments[7],
             );
 
             if is_global_unicast(&prefix) {
@@ -208,7 +216,16 @@ fn is_global_unicast(addr: &Ipv6Addr) -> bool {
 
 fn mask_to_64(addr: &Ipv6Addr) -> Ipv6Addr {
     let segments = addr.segments();
-    Ipv6Addr::new(segments[0], segments[1], segments[2], segments[3], 0, 0, 0, 0)
+    Ipv6Addr::new(
+        segments[0],
+        segments[1],
+        segments[2],
+        segments[3],
+        0,
+        0,
+        0,
+        0,
+    )
 }
 
 #[async_trait]
@@ -241,27 +258,27 @@ mod tests {
         let mut pkt = Vec::with_capacity(48);
 
         // ICMPv6 header
-        pkt.push(134);       // type = Router Advertisement
-        pkt.push(0);         // code
+        pkt.push(134); // type = Router Advertisement
+        pkt.push(0); // code
         pkt.extend_from_slice(&[0u8, 0]); // checksum (zero for test)
 
         // RA body (12 bytes)
-        pkt.push(64);        // cur_hop_limit
-        pkt.push(0);         // flags (M=0, O=0)
-        pkt.extend_from_slice(&1800u16.to_be_bytes());  // router_lifetime
-        pkt.extend_from_slice(&0u32.to_be_bytes());     // reachable_time
-        pkt.extend_from_slice(&0u32.to_be_bytes());     // retrans_timer
+        pkt.push(64); // cur_hop_limit
+        pkt.push(0); // flags (M=0, O=0)
+        pkt.extend_from_slice(&1800u16.to_be_bytes()); // router_lifetime
+        pkt.extend_from_slice(&0u32.to_be_bytes()); // reachable_time
+        pkt.extend_from_slice(&0u32.to_be_bytes()); // retrans_timer
 
         // PIO
-        pkt.push(3);         // type = Prefix Information
-        pkt.push(4);         // length = 4 (32 bytes)
-        pkt.push(64);        // prefix_length
+        pkt.push(3); // type = Prefix Information
+        pkt.push(4); // length = 4 (32 bytes)
+        pkt.push(64); // prefix_length
         let flags: u8 = if a_flag { 0xC0 } else { 0x80 }; // A+L or L-only
         pkt.push(flags);
-        pkt.extend_from_slice(&86400u32.to_be_bytes());  // valid_lifetime
-        pkt.extend_from_slice(&14400u32.to_be_bytes());  // preferred_lifetime
-        pkt.extend_from_slice(&[0u8; 4]);                // reserved
-        pkt.extend_from_slice(&prefix.octets());         // prefix (16 bytes)
+        pkt.extend_from_slice(&86400u32.to_be_bytes()); // valid_lifetime
+        pkt.extend_from_slice(&14400u32.to_be_bytes()); // preferred_lifetime
+        pkt.extend_from_slice(&[0u8; 4]); // reserved
+        pkt.extend_from_slice(&prefix.octets()); // prefix (16 bytes)
 
         assert_eq!(pkt.len(), 48);
         pkt
@@ -273,7 +290,10 @@ mod tests {
         let pkt = build_ra_packet(prefix, true);
         let result = parse_ra_packet(&pkt);
         assert!(result.is_some(), "should parse global prefix");
-        assert_eq!(result.unwrap(), "2001:db8:1:2::".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(
+            result.unwrap(),
+            "2001:db8:1:2::".parse::<Ipv6Addr>().unwrap()
+        );
     }
 
     #[test]
@@ -281,7 +301,10 @@ mod tests {
         let prefix: Ipv6Addr = "2001:db8:1:2::".parse().unwrap();
         let pkt = build_ra_packet(prefix, false);
         let result = parse_ra_packet(&pkt);
-        assert!(result.is_none(), "should not return prefix when A flag is unset");
+        assert!(
+            result.is_none(),
+            "should not return prefix when A flag is unset"
+        );
     }
 
     #[test]

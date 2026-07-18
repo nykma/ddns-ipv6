@@ -1,7 +1,7 @@
 use async_trait::async_trait;
+use hickory_resolver::Resolver;
 use hickory_resolver::config::ResolverConfig;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
-use hickory_resolver::Resolver;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,10 +18,7 @@ pub struct DnsResolver {
 }
 
 impl DnsResolver {
-    pub fn new(
-        reference_domain: String,
-        interval: Duration,
-    ) -> Result<Self, Error> {
+    pub fn new(reference_domain: String, interval: Duration) -> Result<Self, Error> {
         let resolver = Resolver::builder_with_config(
             ResolverConfig::default(),
             TokioRuntimeProvider::default(),
@@ -77,7 +74,16 @@ fn is_global_unicast(addr: &Ipv6Addr) -> bool {
 /// Mask an Ipv6Addr to its /64 prefix (zero out lower 64 bits).
 fn mask_to_64(addr: &Ipv6Addr) -> Ipv6Addr {
     let segments = addr.segments();
-    Ipv6Addr::new(segments[0], segments[1], segments[2], segments[3], 0, 0, 0, 0)
+    Ipv6Addr::new(
+        segments[0],
+        segments[1],
+        segments[2],
+        segments[3],
+        0,
+        0,
+        0,
+        0,
+    )
 }
 
 #[async_trait]

@@ -32,10 +32,7 @@ fn cloudflare_set_and_get_record() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let updater = ddns_ipv6::updater::cloudflare::CloudflareUpdater::new(
-            zone_id,
-            api_token,
-        );
+        let updater = ddns_ipv6::updater::cloudflare::CloudflareUpdater::new(zone_id, api_token);
 
         let test_addr: Ipv6Addr = "2001:db8:test::1".parse().unwrap();
 

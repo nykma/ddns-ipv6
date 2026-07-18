@@ -22,7 +22,7 @@ impl Rfc2136Updater {
             other => {
                 return Err(Error::Config(ConfigError::UnknownAlgorithm(
                     other.to_string(),
-                )))
+                )));
             }
         };
 

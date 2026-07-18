@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
 
-use bollard::query_parameters::ListContainersOptions;
 use bollard::Docker;
+use bollard::query_parameters::ListContainersOptions;
 use tracing::{debug, info, warn};
 
 use crate::config::{DockerConfig, HostEntry};
@@ -22,12 +22,9 @@ pub struct DockerDiscoverer {
 impl DockerDiscoverer {
     /// Connect to the Docker daemon at the configured socket path.
     pub fn new(config: &DockerConfig) -> Result<Self, crate::Error> {
-        let docker = Docker::connect_with_unix(
-            &config.socket_path,
-            120,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .map_err(|e| crate::Error::Other(e.into()))?;
+        let docker =
+            Docker::connect_with_unix(&config.socket_path, 120, bollard::API_DEFAULT_VERSION)
+                .map_err(|e| crate::Error::Other(e.into()))?;
         info!(
             socket = %config.socket_path,
             "connected to Docker daemon"
@@ -121,13 +118,13 @@ impl DockerDiscoverer {
     // Inspect a container's network settings and extract the lower 64 bits
     // of the first global unicast IPv6 address found. Returns `None` if
     // the container has no matching address.
-    async fn extract_suffix(
-        &self,
-        container_id: &str,
-    ) -> Result<Option<Ipv6Addr>, crate::Error> {
+    async fn extract_suffix(&self, container_id: &str) -> Result<Option<Ipv6Addr>, crate::Error> {
         let inspect = self
             .docker
-            .inspect_container(container_id, None::<bollard::query_parameters::InspectContainerOptions>)
+            .inspect_container(
+                container_id,
+                None::<bollard::query_parameters::InspectContainerOptions>,
+            )
             .await
             .map_err(|e| crate::Error::Other(e.into()))?;
 
@@ -162,7 +159,6 @@ impl DockerDiscoverer {
         Ok(None)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

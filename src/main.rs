@@ -10,12 +10,12 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use ddns_ipv6::config::{Config, PrefixConfig, ProviderConfig};
+use ddns_ipv6::config::{PrefixConfig, ProviderConfig, ValidatedConfig};
+use ddns_ipv6::docker::DockerDiscoverer;
 use ddns_ipv6::prefix::dns::DnsResolver;
 use ddns_ipv6::updater::cloudflare::CloudflareUpdater;
 use ddns_ipv6::util;
 use ddns_ipv6::{DnsUpdater, Error, PrefixDetector};
-use ddns_ipv6::docker::DockerDiscoverer;
 
 #[derive(Parser)]
 #[command(name = "ddns-ipv6", about = "Dynamic DNS updater for IPv6 prefixes")]
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let cli = Cli::parse();
-    let config = Config::load(&cli.config)?;
+    let config = ValidatedConfig::load(&cli.config)?;
     info!(path = %cli.config.display(), "config loaded");
 
     // Build prefix detector
@@ -127,8 +127,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let force = force_refresh.clone();
         tokio::spawn(async move {
-            let mut usr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
-                .expect("failed to register SIGUSR1 handler");
+            let mut usr1 =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+                    .expect("failed to register SIGUSR1 handler");
             loop {
                 usr1.recv().await;
                 info!("received SIGUSR1, forcing refresh");
@@ -154,7 +155,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        run_update_cycle(&*detector, &*updater, &static_suffixes, docker_discoverer.as_ref(), &mut cache).await;
+        run_update_cycle(
+            &*detector,
+            &*updater,
+            &static_suffixes,
+            docker_discoverer.as_ref(),
+            &mut cache,
+        )
+        .await;
     }
 
     info!("shutdown complete");
@@ -222,7 +230,7 @@ async fn run_update_cycle(
     }
 }
 
-fn build_detector(config: &Config) -> Result<Arc<dyn PrefixDetector>, Error> {
+fn build_detector(config: &ValidatedConfig) -> Result<Arc<dyn PrefixDetector>, Error> {
     match &config.prefix {
         PrefixConfig::Dns { reference_domain } => {
             info!(
@@ -250,15 +258,13 @@ fn build_detector(config: &Config) -> Result<Arc<dyn PrefixDetector>, Error> {
             Ok(Arc::new(detector))
         }
         #[cfg(not(target_os = "linux"))]
-        PrefixConfig::Netlink { .. } | PrefixConfig::Ra { .. } => {
-            Err(Error::Config(ddns_ipv6::ConfigError::MissingField(
-                "netlink and ra methods are Linux-only".into(),
-            )))
-        }
+        PrefixConfig::Netlink { .. } | PrefixConfig::Ra { .. } => Err(Error::Config(
+            ddns_ipv6::ConfigError::MissingField("netlink and ra methods are Linux-only".into()),
+        )),
     }
 }
 
-fn build_updater(config: &Config) -> Result<Arc<dyn DnsUpdater>, Error> {
+fn build_updater(config: &ValidatedConfig) -> Result<Arc<dyn DnsUpdater>, Error> {
     match &config.dns {
         ProviderConfig::Cloudflare { zone_id, api_token } => {
             info!(provider = "cloudflare", zone_id = %zone_id, "using Cloudflare DNS updater");

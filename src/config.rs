@@ -1,21 +1,45 @@
-
 use std::net::Ipv6Addr;
 use std::path::Path;
 
+use serde::{Deserialize, Deserializer};
+
 use crate::ConfigError;
 
-fn default_interval() -> u64 {
-    300
+// ── Secret string that supports env: prefix ────────────────────────────────
+
+/// A string value that resolves the `env:VAR` prefix by reading the named
+/// environment variable. Plain strings are used as-is.
+#[derive(Debug, Clone)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub prefix: PrefixConfig,
-    pub dns: ProviderConfig,
-    pub hosts: Vec<HostEntry>,
-    pub interval_secs: u64,
-    pub docker: Option<DockerConfig>,
+fn resolve_env(value: &str) -> Result<Secret, ConfigError> {
+    match value.strip_prefix("env:") {
+        Some(var) => {
+            let val = std::env::var(var).map_err(|_| ConfigError::EnvNotSet(var.to_string()))?;
+            Ok(Secret(val))
+        }
+        None => Ok(Secret(value.to_string())),
+    }
 }
+
+// ── Ipv6Addr deserialization helper ────────────────────────────────────────
+
+fn ipv6addr_from_str<'de, D>(deserializer: D) -> Result<Ipv6Addr, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    s.parse()
+        .map_err(|e| serde::de::Error::custom(format!("invalid suffix '{s}': {e}")))
+}
+
+// ── Public types (used by main.rs) ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum PrefixConfig {
@@ -24,6 +48,19 @@ pub enum PrefixConfig {
     Ra { interface: String },
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct HostEntry {
+    #[serde(deserialize_with = "ipv6addr_from_str")]
+    pub suffix: Ipv6Addr,
+    pub domain: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DockerConfig {
+    pub socket_path: String,
+}
+
+/// The validated, env-resolved DNS provider config consumed by the main loop.
 #[derive(Debug, Clone)]
 pub enum ProviderConfig {
     Cloudflare {
@@ -38,184 +75,137 @@ pub enum ProviderConfig {
     },
 }
 
-#[derive(Debug, Clone)]
-pub struct HostEntry {
-    pub suffix: Ipv6Addr,
-    pub domain: String,
+fn default_interval() -> u64 {
+    300
 }
 
 fn default_socket_path() -> String {
     "/var/run/docker.sock".to_string()
 }
 
-#[derive(Debug, Clone)]
-pub struct DockerConfig {
-    pub socket_path: String,
+// ── Internal deserialization helpers ───────────────────────────────────────
+
+/// Deserialized from TOML — secrets are still raw strings at this stage.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    prefix: RawPrefix,
+    dns: RawDns,
+    #[serde(default)]
+    hosts: Vec<HostEntry>,
+    #[serde(default = "default_interval")]
+    interval_secs: u64,
+    docker: Option<RawDocker>,
 }
 
-impl Config {
+#[derive(Debug, Deserialize)]
+#[serde(tag = "method")]
+enum RawPrefix {
+    #[serde(rename = "dns")]
+    Dns { reference_domain: String },
+    #[serde(rename = "netlink")]
+    Netlink { interface: String },
+    #[serde(rename = "ra")]
+    Ra { interface: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "provider")]
+enum RawDns {
+    #[serde(rename = "cloudflare")]
+    Cloudflare { zone_id: String, api_token: String },
+    #[serde(rename = "rfc2136")]
+    Rfc2136 {
+        server: String,
+        key_name: String,
+        key_algorithm: String,
+        key_secret: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct RawDocker {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_socket_path")]
+    socket_path: String,
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
+/// Fully validated configuration ready for use by the main loop.
+#[derive(Debug, Clone)]
+pub struct ValidatedConfig {
+    pub prefix: PrefixConfig,
+    pub dns: ProviderConfig,
+    pub hosts: Vec<HostEntry>,
+    pub interval_secs: u64,
+    pub docker: Option<DockerConfig>,
+}
+
+impl ValidatedConfig {
+    /// Load, deserialize, and validate configuration from a TOML file.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path)?;
-        let root: toml::Table =
-            toml::from_str(&contents).map_err(ConfigError::Parse)?;
-
-        let prefix = parse_prefix(&root)?;
-        let dns = parse_dns(&root)?;
-        let hosts = parse_hosts(&root)?;
-        let docker = parse_docker(&root)?;
-        let interval_secs = root
-            .get("interval_secs")
-            .and_then(|v| v.as_integer())
-            .map(|v| v as u64)
-            .unwrap_or_else(default_interval);
-
-        if hosts.is_empty() && docker.is_none() {
-            return Err(ConfigError::EmptyHosts);
-        }
-
-        Ok(Config {
-            prefix,
-            dns,
-            hosts,
-            interval_secs,
-            docker,
-        })
+        let raw: RawConfig = toml::from_str(&contents)?;
+        validate(raw)
     }
 }
 
-fn parse_prefix(root: &toml::Table) -> Result<PrefixConfig, ConfigError> {
-    let prefix_table = root
-        .get("prefix")
-        .and_then(|v| v.as_table())
-        .ok_or_else(|| ConfigError::MissingField("prefix".into()))?;
+fn validate(raw: RawConfig) -> Result<ValidatedConfig, ConfigError> {
+    let prefix = match raw.prefix {
+        RawPrefix::Dns { reference_domain } => PrefixConfig::Dns { reference_domain },
+        RawPrefix::Netlink { interface } => PrefixConfig::Netlink { interface },
+        RawPrefix::Ra { interface } => PrefixConfig::Ra { interface },
+    };
 
-    let method = prefix_table
-        .get("method")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ConfigError::MissingField("prefix.method".into()))?;
-
-    match method {
-        "dns" => {
-            let reference_domain = get_string(prefix_table, "reference_domain")?;
-            Ok(PrefixConfig::Dns { reference_domain })
+    let dns = match raw.dns {
+        RawDns::Cloudflare { zone_id, api_token } => {
+            let resolved = resolve_env(&api_token)?;
+            ProviderConfig::Cloudflare {
+                zone_id,
+                api_token: resolved.into_string(),
+            }
         }
-        "netlink" => {
-            let interface = get_string(prefix_table, "interface")?;
-            Ok(PrefixConfig::Netlink { interface })
-        }
-        "ra" => {
-            let interface = get_string(prefix_table, "interface")?;
-            Ok(PrefixConfig::Ra { interface })
-        }
-        other => Err(ConfigError::MissingField(format!(
-            "unknown prefix method: {other}"
-        ))),
-    }
-}
-
-fn parse_dns(root: &toml::Table) -> Result<ProviderConfig, ConfigError> {
-    let dns_table = root
-        .get("dns")
-        .and_then(|v| v.as_table())
-        .ok_or_else(|| ConfigError::MissingField("dns".into()))?;
-
-    let provider = dns_table
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ConfigError::MissingField("dns.provider".into()))?;
-
-    match provider {
-        "cloudflare" => {
-            let zone_id = get_string(dns_table, "zone_id")?;
-            let api_token = resolve_env_str(&get_string(dns_table, "api_token")?)?;
-            Ok(ProviderConfig::Cloudflare { zone_id, api_token })
-        }
-        "rfc2136" => {
-            let server = get_string(dns_table, "server")?;
-            let key_name = get_string(dns_table, "key_name")?;
-            let key_algorithm = get_string(dns_table, "key_algorithm")?;
-            let key_secret = resolve_env_str(&get_string(dns_table, "key_secret")?)?;
-
+        RawDns::Rfc2136 {
+            server,
+            key_name,
+            key_algorithm,
+            key_secret,
+        } => {
             // Validate algorithm
             match key_algorithm.as_str() {
                 "hmac-sha256" | "hmac-sha512" => {}
                 other => return Err(ConfigError::UnknownAlgorithm(other.to_string())),
             }
-
-            Ok(ProviderConfig::Rfc2136 {
+            let resolved = resolve_env(&key_secret)?;
+            ProviderConfig::Rfc2136 {
                 server,
                 key_name,
                 key_algorithm,
-                key_secret,
-            })
+                key_secret: resolved.into_string(),
+            }
         }
-        other => Err(ConfigError::MissingField(format!(
-            "unknown DNS provider: {other}"
-        ))),
-    }
-}
-
-fn parse_hosts(root: &toml::Table) -> Result<Vec<HostEntry>, ConfigError> {
-    let hosts_raw = match root.get("hosts").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => return Ok(Vec::new()),
-    };
-    let mut hosts = Vec::new();
-    for entry in hosts_raw {
-        let table = entry.as_table().ok_or_else(|| {
-            ConfigError::MissingField("hosts entry must be a table".into())
-        })?;
-        let suffix_str = get_string(table, "suffix")?;
-        let suffix: Ipv6Addr = suffix_str
-            .parse()
-            .map_err(|e: std::net::AddrParseError| ConfigError::InvalidSuffix(suffix_str.clone(), e.to_string()))?;
-        let domain = get_string(table, "domain")?;
-        hosts.push(HostEntry { suffix, domain });
-    }
-
-
-    Ok(hosts)
-}
-
-fn parse_docker(root: &toml::Table) -> Result<Option<DockerConfig>, ConfigError> {
-    let docker_table = match root.get("docker").and_then(|v| v.as_table()) {
-        Some(t) => t,
-        None => return Ok(None),
     };
 
-    let enabled = docker_table
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let docker = raw.docker.filter(|d| d.enabled).map(|d| DockerConfig {
+        socket_path: d.socket_path,
+    });
 
-    if !enabled {
-        return Ok(None);
+    if raw.hosts.is_empty() && docker.is_none() {
+        return Err(ConfigError::EmptyHosts);
     }
 
-    let socket_path = docker_table
-        .get("socket_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(default_socket_path);
-
-    Ok(Some(DockerConfig { socket_path }))
+    Ok(ValidatedConfig {
+        prefix,
+        dns,
+        hosts: raw.hosts,
+        interval_secs: raw.interval_secs,
+        docker,
+    })
 }
 
-fn get_string(table: &toml::Table, key: &str) -> Result<String, ConfigError> {
-    table
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| ConfigError::MissingField(key.to_string()))
-}
-
-fn resolve_env_str(value: &str) -> Result<String, ConfigError> {
-    if let Some(var) = value.strip_prefix("env:") {
-        std::env::var(var).map_err(|_| ConfigError::EnvNotSet(var.to_string()))
-    } else {
-        Ok(value.to_string())
-    }
-}
+// ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -254,7 +244,7 @@ domain = \"server-b.example.com\"
 interval_secs = 300
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
 
         assert_eq!(config.interval_secs, 300);
@@ -288,11 +278,16 @@ suffix = \"::1\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
 
         match &config.dns {
-            ProviderConfig::Rfc2136 { server, key_name, key_algorithm, .. } => {
+            ProviderConfig::Rfc2136 {
+                server,
+                key_name,
+                key_algorithm,
+                ..
+            } => {
                 assert_eq!(server, "tcp://ns1.example.com:53");
                 assert_eq!(key_name, "ddns-key.");
                 assert_eq!(key_algorithm, "hmac-sha256");
@@ -302,7 +297,7 @@ domain = \"test.example.com\"
     }
 
     #[test]
-    fn empty_hosts_errors() {
+    fn empty_hosts_and_no_docker_errors() {
         let toml = "\
 [prefix]
 method = \"dns\"
@@ -312,18 +307,11 @@ reference_domain = \"router.example.com\"
 provider = \"cloudflare\"
 zone_id = \"abc\"
 api_token = \"token\"
-
-hosts = []
 ";
         let path = write_tmp(toml);
-        let result = Config::load(&path);
+        let result = ValidatedConfig::load(&path);
         std::fs::remove_file(&path).ok();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, ConfigError::EmptyHosts | ConfigError::MissingField(_)),
-            "expected EmptyHosts or MissingField, got {err:?}"
-        );
+        assert!(matches!(result.unwrap_err(), ConfigError::EmptyHosts));
     }
 
     #[test]
@@ -343,13 +331,14 @@ suffix = \"not-an-ip\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let result = Config::load(&path);
+        let result = ValidatedConfig::load(&path);
         std::fs::remove_file(&path).ok();
         assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::InvalidSuffix(s, _) => assert_eq!(s, "not-an-ip"),
-            e => panic!("expected InvalidSuffix, got {e:?}"),
-        }
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("invalid suffix"),
+            "expected suffix error, got: {err_str}"
+        );
     }
 
     #[test]
@@ -369,7 +358,7 @@ suffix = \"::1\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!(config.interval_secs, 300);
     }
@@ -393,7 +382,7 @@ suffix = \"::1\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let result = Config::load(&path);
+        let result = ValidatedConfig::load(&path);
         std::fs::remove_file(&path).ok();
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -420,7 +409,7 @@ suffix = \"::1\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         unsafe { std::env::remove_var("DDNS_TEST_TOKEN") };
 
@@ -450,7 +439,7 @@ suffix = \"::1\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let result = Config::load(&path);
+        let result = ValidatedConfig::load(&path);
         std::fs::remove_file(&path).ok();
         match result.unwrap_err() {
             ConfigError::EnvNotSet(var) => assert_eq!(var, "DDNS_MISSING_VAR"),
@@ -480,7 +469,7 @@ domain = \"test.example.com\"
 enabled = true
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
 
         let dc = config.docker.expect("docker config should be present");
@@ -508,7 +497,7 @@ enabled = true
 socket_path = \"/custom/path/docker.sock\"
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
 
         let dc = config.docker.expect("docker config should be present");
@@ -535,7 +524,7 @@ domain = \"test.example.com\"
 enabled = false
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(config.docker.is_none());
     }
@@ -557,13 +546,13 @@ suffix = \"::1\"
 domain = \"test.example.com\"
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(config.docker.is_none());
     }
 
     #[test]
-    fn docker_empty_section_defaults_disabled() {
+    fn docker_empty_section_returns_none() {
         let toml = "\
 [prefix]
 method = \"dns\"
@@ -581,7 +570,7 @@ domain = \"test.example.com\"
 [docker]
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(config.docker.is_none());
     }
@@ -602,10 +591,9 @@ api_token = \"token\"
 enabled = true
 ";
         let path = write_tmp(toml);
-        let config = Config::load(&path).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(config.hosts.is_empty());
         assert!(config.docker.is_some());
     }
 }
-

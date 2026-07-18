@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use nlink::netlink::{Connection, Route, RtnetlinkGroup};
 use nlink::NetworkEvent;
+use nlink::netlink::{Connection, Route, RtnetlinkGroup};
 use std::net::{IpAddr, Ipv6Addr};
 use tokio::sync::watch;
 use tokio_stream::StreamExt;
@@ -34,11 +34,8 @@ impl NetlinkWatcher {
     }
 }
 
-async fn run_event_loop(
-    tx: watch::Sender<()>,
-) -> Result<(), Error> {
-    let conn = Connection::<Route>::new()
-        .map_err(|e| Error::Other(e.into()))?;
+async fn run_event_loop(tx: watch::Sender<()>) -> Result<(), Error> {
+    let conn = Connection::<Route>::new().map_err(|e| Error::Other(e.into()))?;
 
     conn.subscribe(&[RtnetlinkGroup::Ipv6Addr])
         .map_err(|e| Error::Other(e.into()))?;
@@ -71,8 +68,7 @@ async fn run_event_loop(
 }
 
 async fn detect_prefix(interface: &str) -> Result<Ipv6Addr, Error> {
-    let conn = Connection::<Route>::new()
-        .map_err(|e| Error::Other(e.into()))?;
+    let conn = Connection::<Route>::new().map_err(|e| Error::Other(e.into()))?;
 
     let addresses = conn
         .get_addresses_by_name(interface)
@@ -124,7 +120,16 @@ fn is_global_unicast(addr: &Ipv6Addr) -> bool {
 
 fn mask_to_64(addr: &Ipv6Addr) -> Ipv6Addr {
     let segments = addr.segments();
-    Ipv6Addr::new(segments[0], segments[1], segments[2], segments[3], 0, 0, 0, 0)
+    Ipv6Addr::new(
+        segments[0],
+        segments[1],
+        segments[2],
+        segments[3],
+        0,
+        0,
+        0,
+        0,
+    )
 }
 
 #[async_trait]
