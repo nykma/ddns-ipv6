@@ -75,3 +75,13 @@ domain = "printer.example.com"
 # How often (in seconds) to poll the reference domain for prefix changes.
 # Only used when method = "dns". Default: 300.
 interval_secs = 300
+
+
+# ── Docker container discovery (optional) ──────────────────────────────────
+# Automatically discover containers labeled ddns.domain=<fqdn> and add them
+# as DDNS hosts alongside static [[hosts]] entries.
+# Requires Docker socket access.
+#
+# [docker]
+# enabled = true
+# socket_path = "/var/run/docker.sock"   # default, omit unless custom
