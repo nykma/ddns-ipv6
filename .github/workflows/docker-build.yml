@@ -20,10 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
-
+        include:
+          - { platform: linux/amd64, arch: amd64 }
+          - { platform: linux/arm64, arch: arm64 }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,6 +54,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push by platform
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -68,13 +68,14 @@ jobs:
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
-          digest="${{ steps.meta.outputs.version }}"
-          touch "/tmp/digests/${digest#sha256:}"
+          digest=$(echo "${{ steps.build.outputs.digest }}" | tr -d '[:space:]')
+          digest="${digest#sha256:}"
+          touch "/tmp/digests/${digest}"
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.platform }}
+          name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
